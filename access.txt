@@ -1,0 +1,20 @@
+- find one trace
+
+SELECT * FROM events WHERE trace_id = $1
+
+- find average query duration in the last hour
+
+SELECT
+    avg(duration)
+FROM
+    events
+WHERE 
+    time > now() - '1 hour'
+    AND name = 'query'
+
+
+=================
+
+
+
+- event_type: 'span_start' | 'span_end' | 'log'
