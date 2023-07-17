@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{any::Any, sync::Arc};
 
 use arrow::{
     array::{
@@ -9,15 +9,18 @@ use arrow::{
     error::ArrowError,
     record_batch::RecordBatch,
 };
-use byteorder::{ByteOrder, LittleEndian};
-use chrono::NaiveDateTime;
+use chrono::{DateTime, Duration, Utc};
+use uuid::Uuid;
 
-use crate::core::{FieldValues, SpanId, TraceId};
+use crate::attributes::{Attribute, AttributeSchema, AttributeType, AttributeValues};
 
-pub struct SpandStartInfo {}
+pub type TraceId = Uuid;
+
+pub type SpanId = u64;
+
+pub struct SpanStartInfo {}
 
 pub struct SpanEndInfo {
-    end_time: NaiveDateTime,
     duration: Duration,
 }
 
@@ -26,62 +29,97 @@ pub struct LogInfo {
 }
 
 pub enum EventType {
-    SpanStart(SpandStartInfo),
+    SpanStart(SpanStartInfo),
     SpanEnd(SpanEndInfo),
     Log(LogInfo),
 }
 
 pub struct Event {
-    trace_id: TraceId,
-    span_id: SpanId,
-    time: NaiveDateTime,
-    event_type: EventType,
-    attributes: FieldValues,
+    pub trace_id: TraceId,
+    pub span_id: SpanId,
+    pub time: DateTime<Utc>,
+    pub event_type: EventType,
+    pub attributes: AttributeValues,
 }
 
-fn arrow_schema(attributes_schema: Schema) -> Schema {
+impl Event {
+    pub fn span_start(trace_id: TraceId, attributes: AttributeValues) -> Self {
+        Event {
+            trace_id,
+            span_id: rand::random::<u64>(),
+            time: Utc::now(),
+            event_type: EventType::SpanStart(SpanStartInfo {}),
+            attributes,
+        }
+    }
+
+    pub fn span_end(trace_id: TraceId, span_id: SpanId, start_time: Option<DateTime<Utc>>) -> Self {
+        let end_time = Utc::now();
+        let duration = match start_time {
+            Some(start_time) => end_time - start_time,
+            None => Duration::nanoseconds(0),
+        };
+        Event {
+            trace_id,
+            span_id,
+            time: end_time,
+            event_type: EventType::SpanEnd(SpanEndInfo { duration }),
+            attributes: AttributeValues::new(),
+        }
+    }
+
+    pub fn log(
+        trace_id: TraceId,
+        span_id: SpanId,
+        message: String,
+        attributes: AttributeValues,
+    ) -> Self {
+        Event {
+            trace_id,
+            span_id,
+            time: Utc::now(),
+            event_type: EventType::Log(LogInfo { message }),
+            attributes,
+        }
+    }
+}
+
+fn arrow_schema(schema: &AttributeSchema) -> Schema {
     let mut fields = vec![
         Field::new("trace_id", DataType::FixedSizeBinary(16), false),
-        Field::new("span_id", DataType::Int64, false),
+        Field::new("span_id", DataType::UInt64, false),
         Field::new(
             "time",
             DataType::Timestamp(TimeUnit::Nanosecond, None),
             false,
         ),
-        Field::new(
-            "end_time",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new("duration", DataType::Duration(TimeUnit::Nanosecond), false),
-        Field::new("message", DataType::Utf8, false),
+        Field::new("duration", DataType::Duration(TimeUnit::Nanosecond), true),
+        Field::new("message", DataType::Utf8, true),
     ];
 
-    for field in attributes_schema.fields.iter() {
-        fields.push(field.as_ref().clone())
-    }
+    fields.extend(schema.arrow_fields());
 
     Schema::new(fields)
 }
 
 pub fn to_record_batch(
-    attributes_schema: Schema,
+    schema: &AttributeSchema,
     events: Vec<Event>,
 ) -> Result<RecordBatch, ArrowError> {
     let size = events.len();
-    let mut attribute_arrays: Vec<Box<dyn ArrayBuilder>> =
-        Vec::with_capacity(attributes_schema.fields.len());
+    let mut attribute_arrays: Vec<Box<dyn ArrayBuilder>> = Vec::with_capacity(schema.attrs.len());
 
-    for field in attributes_schema.fields.iter() {
-        match field.data_type() {
-            DataType::Boolean => {
+    for attribute in schema.attrs.iter() {
+        match attribute.data_type {
+            AttributeType::Boolean => {
                 attribute_arrays.push(Box::new(BooleanBuilder::with_capacity(size)))
             }
-            DataType::UInt64 => attribute_arrays.push(Box::new(UInt8Builder::with_capacity(size))),
-            DataType::Utf8 => {
+            AttributeType::UInt64 => {
+                attribute_arrays.push(Box::new(UInt8Builder::with_capacity(size)))
+            }
+            AttributeType::String => {
                 attribute_arrays.push(Box::new(StringBuilder::with_capacity(size, size)))
             }
-            _ => unimplemented!(),
         }
     }
 
@@ -89,11 +127,10 @@ pub fn to_record_batch(
     let mut span_id_builder = UInt64Builder::with_capacity(size);
     let mut time_builder = TimestampNanosecondBuilder::with_capacity(size);
 
-    let mut end_time_builder = TimestampNanosecondBuilder::with_capacity(size);
     let mut duration_builder = DurationNanosecondBuilder::with_capacity(size);
     let mut message_builder = StringBuilder::with_capacity(size, size);
 
-    for event in events {
+    for mut event in events {
         trace_id_builder
             .append_value(event.trace_id.as_bytes())
             .unwrap();
@@ -102,55 +139,26 @@ pub fn to_record_batch(
 
         match event.event_type {
             EventType::SpanStart(_) => {
-                end_time_builder.append_null();
                 duration_builder.append_null();
                 message_builder.append_null();
             }
             EventType::SpanEnd(info) => {
-                end_time_builder.append_value(info.end_time.timestamp_nanos());
-                duration_builder
-                    .append_value((info.end_time - event.time).num_nanoseconds().unwrap());
+                duration_builder.append_value(info.duration.num_nanoseconds().unwrap());
                 message_builder.append_null();
             }
             EventType::Log(info) => {
-                end_time_builder.append_null();
                 duration_builder.append_null();
                 message_builder.append_value(info.message);
             }
         }
 
-        for (idx, field) in attributes_schema.fields.iter().enumerate() {
+        for (idx, definition) in schema.attrs.iter().enumerate() {
             let generic_builder = attribute_arrays[idx].as_any_mut();
-            let bytes = event.attributes.get(&idx).unwrap();
 
-            match field.data_type() {
-                DataType::Boolean => {
-                    let builder = generic_builder.downcast_mut::<BooleanBuilder>().unwrap();
-                    if bytes.is_empty() {
-                        builder.append_null()
-                    } else {
-                        builder.append_value(bytes.as_ref()[0] != 0)
-                    }
-                }
-                DataType::UInt64 => {
-                    let builder = generic_builder.downcast_mut::<UInt64Builder>().unwrap();
-                    if bytes.is_empty() {
-                        builder.append_null()
-                    } else {
-                        builder.append_value(LittleEndian::read_u64(bytes.as_ref()))
-                    }
-                }
-                DataType::Utf8 => {
-                    let builder = generic_builder.downcast_mut::<StringBuilder>().unwrap();
-                    if bytes.is_empty() {
-                        builder.append_null()
-                    } else {
-                        unsafe {
-                            builder.append_value(std::str::from_utf8_unchecked(bytes.as_ref()))
-                        }
-                    }
-                }
-                _ => unimplemented!(),
+            let possible_attr = event.attributes.remove(&idx);
+            match possible_attr {
+                Some(attribute) => append_value(generic_builder, attribute),
+                None => append_null(generic_builder, &definition.data_type),
             }
         }
     }
@@ -159,7 +167,6 @@ pub fn to_record_batch(
         Arc::new(trace_id_builder.finish()),
         Arc::new(span_id_builder.finish()),
         Arc::new(time_builder.finish()),
-        Arc::new(end_time_builder.finish()),
         Arc::new(duration_builder.finish()),
         Arc::new(message_builder.finish()),
     ];
@@ -168,5 +175,39 @@ pub fn to_record_batch(
         arrays.push(Arc::new(attribute_array.finish()))
     }
 
-    RecordBatch::try_new(Arc::new(arrow_schema(attributes_schema)), arrays)
+    RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)
+}
+
+fn append_value(builder: &mut dyn Any, attribute: Attribute) {
+    match attribute {
+        Attribute::Boolean(value) => {
+            let builder = builder.downcast_mut::<BooleanBuilder>().unwrap();
+            builder.append_value(value)
+        }
+        Attribute::UInt64(value) => {
+            let builder = builder.downcast_mut::<UInt64Builder>().unwrap();
+            builder.append_value(value)
+        }
+        Attribute::String(value) => {
+            let builder = builder.downcast_mut::<StringBuilder>().unwrap();
+            builder.append_value(value)
+        }
+    }
+}
+
+fn append_null(builder: &mut dyn Any, attr_type: &AttributeType) {
+    match attr_type {
+        AttributeType::Boolean => {
+            let builder = builder.downcast_mut::<BooleanBuilder>().unwrap();
+            builder.append_null()
+        }
+        AttributeType::UInt64 => {
+            let builder = builder.downcast_mut::<UInt64Builder>().unwrap();
+            builder.append_null()
+        }
+        AttributeType::String => {
+            let builder = builder.downcast_mut::<StringBuilder>().unwrap();
+            builder.append_null()
+        }
+    }
 }
