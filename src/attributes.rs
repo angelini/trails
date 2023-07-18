@@ -2,17 +2,20 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::{DataType, Field};
 
+#[derive(Clone)]
 pub enum AttributeType {
     Boolean,
     UInt64,
     String,
 }
 
+#[derive(Clone)]
 pub struct AttributeDefinition {
     pub name: String,
     pub data_type: AttributeType,
 }
 
+#[derive(Clone)]
 pub struct AttributeSchema {
     pub attrs: Vec<AttributeDefinition>,
 }

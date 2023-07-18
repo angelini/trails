@@ -82,6 +82,14 @@ impl Event {
             attributes,
         }
     }
+
+    fn type_byte(&self) -> u8 {
+        match self.event_type {
+            EventType::SpanStart(_) => 0,
+            EventType::SpanEnd(_) => 1,
+            EventType::Log(_) => 2,
+        }
+    }
 }
 
 fn arrow_schema(schema: &AttributeSchema) -> Schema {
@@ -93,6 +101,7 @@ fn arrow_schema(schema: &AttributeSchema) -> Schema {
             DataType::Timestamp(TimeUnit::Nanosecond, None),
             false,
         ),
+        Field::new("type", DataType::UInt8, false),
         Field::new("duration", DataType::Duration(TimeUnit::Nanosecond), true),
         Field::new("message", DataType::Utf8, true),
     ];
@@ -115,7 +124,7 @@ pub fn to_record_batch(
                 attribute_arrays.push(Box::new(BooleanBuilder::with_capacity(size)))
             }
             AttributeType::UInt64 => {
-                attribute_arrays.push(Box::new(UInt8Builder::with_capacity(size)))
+                attribute_arrays.push(Box::new(UInt64Builder::with_capacity(size)))
             }
             AttributeType::String => {
                 attribute_arrays.push(Box::new(StringBuilder::with_capacity(size, size)))
@@ -126,6 +135,7 @@ pub fn to_record_batch(
     let mut trace_id_builder = FixedSizeBinaryBuilder::with_capacity(size, 16);
     let mut span_id_builder = UInt64Builder::with_capacity(size);
     let mut time_builder = TimestampNanosecondBuilder::with_capacity(size);
+    let mut type_builder = UInt8Builder::with_capacity(size);
 
     let mut duration_builder = DurationNanosecondBuilder::with_capacity(size);
     let mut message_builder = StringBuilder::with_capacity(size, size);
@@ -136,6 +146,7 @@ pub fn to_record_batch(
             .unwrap();
         span_id_builder.append_value(event.span_id);
         time_builder.append_value(event.time.timestamp_nanos());
+        type_builder.append_value(event.type_byte());
 
         match event.event_type {
             EventType::SpanStart(_) => {
@@ -167,6 +178,7 @@ pub fn to_record_batch(
         Arc::new(trace_id_builder.finish()),
         Arc::new(span_id_builder.finish()),
         Arc::new(time_builder.finish()),
+        Arc::new(type_builder.finish()),
         Arc::new(duration_builder.finish()),
         Arc::new(message_builder.finish()),
     ];
