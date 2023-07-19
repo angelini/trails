@@ -9,6 +9,7 @@ arrow-flight = "42.0.0"
 byteorder = "1.4.3"
 bytes = "1.4.0"
 chrono = "0.4.26"
+clap = { version = "4.3.16", features = ["derive"] }
 datafusion = "27.0.0"
 futures = "0.3.28"
 rand = "0.8.5"

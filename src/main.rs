@@ -1,13 +1,52 @@
+use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
+
 use arrow::{error::ArrowError, record_batch::RecordBatch};
 use attributes::{Attribute, AttributeSchema, AttributeType, AttributeValues};
 use buffer::Buffer;
+use clap::{command, CommandFactory, Parser, Subcommand};
 use datafusion::{error::DataFusionError, prelude::SessionContext};
 use reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory, Reedline, Signal};
+use tonic::transport;
+use web::start_server;
 
 mod attributes;
 mod buffer;
 mod data;
 mod web;
+
+#[derive(Debug)]
+enum Error {
+    AddrParse(AddrParseError),
+    Arrow(ArrowError),
+    DataFusion(DataFusionError),
+    Tonic(transport::Error),
+}
+
+impl From<AddrParseError> for Error {
+    fn from(value: AddrParseError) -> Self {
+        Error::AddrParse(value)
+    }
+}
+
+impl From<ArrowError> for Error {
+    fn from(value: ArrowError) -> Self {
+        Error::Arrow(value)
+    }
+}
+
+impl From<DataFusionError> for Error {
+    fn from(value: DataFusionError) -> Self {
+        Error::DataFusion(value)
+    }
+}
+
+impl From<transport::Error> for Error {
+    fn from(value: transport::Error) -> Self {
+        Error::Tonic(value)
+    }
+}
+
+type Result<T> = std::result::Result<T, Error>;
 
 fn gen_attributes(tag: &str, req: u64) -> AttributeValues {
     let mut values = AttributeValues::new();
@@ -32,7 +71,7 @@ fn gen_trace(buffer: &mut Buffer, req: u64, prefix: &str, span_count: usize) {
     }
 }
 
-fn example_batch() -> Result<(AttributeSchema, RecordBatch), ArrowError> {
+fn example_batch() -> Result<(AttributeSchema, RecordBatch)> {
     let schema = AttributeSchema::new(vec![
         ("tag", AttributeType::String),
         ("request", AttributeType::UInt64),
@@ -45,7 +84,7 @@ fn example_batch() -> Result<(AttributeSchema, RecordBatch), ArrowError> {
     Ok((schema, buffer.to_record_batch()?))
 }
 
-async fn add_views(ctx: &SessionContext, schema: &AttributeSchema) -> Result<(), DataFusionError> {
+async fn add_views(ctx: &SessionContext, schema: &AttributeSchema) -> Result<()> {
     let attr_columns = schema
         .attrs
         .iter()
@@ -141,7 +180,7 @@ async fn add_views(ctx: &SessionContext, schema: &AttributeSchema) -> Result<(),
     Ok(())
 }
 
-async fn exec_query(ctx: &SessionContext, query: &str) -> Result<(), DataFusionError> {
+async fn exec_query(ctx: &SessionContext, query: &str) -> Result<()> {
     match ctx.sql(&query).await {
         Ok(df) => {
             df.show().await?;
@@ -155,7 +194,14 @@ async fn exec_query(ctx: &SessionContext, query: &str) -> Result<(), DataFusionE
     Ok(())
 }
 
-async fn start_cli(ctx: &SessionContext) -> Result<(), DataFusionError> {
+async fn start_repl() -> Result<()> {
+    let ctx = SessionContext::new();
+
+    let (schema, batch) = example_batch()?;
+    ctx.register_batch("_events", batch)?;
+
+    add_views(&ctx, &schema).await?;
+
     let history = Box::new(
         FileBackedHistory::with_file(100, "history.txt".into())
             .expect("Error configuring history with file"),
@@ -171,7 +217,7 @@ async fn start_cli(ctx: &SessionContext) -> Result<(), DataFusionError> {
         let sig = line_editor.read_line(&prompt);
         match sig {
             Ok(Signal::Success(query)) => {
-                exec_query(ctx, &query).await?;
+                exec_query(&ctx, &query).await?;
             }
             Ok(Signal::CtrlD) | Ok(Signal::CtrlC) => {
                 println!("Exit.");
@@ -186,15 +232,42 @@ async fn start_cli(ctx: &SessionContext) -> Result<(), DataFusionError> {
     Ok(())
 }
 
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    //, arg_required_else_help(true)
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// SQL REPL connected to an example dataset
+    Repl,
+
+    /// Data collection server
+    Server {
+        #[arg(short, long)]
+        port: u16,
+    },
+}
+
 #[tokio::main]
-async fn main() -> Result<(), DataFusionError> {
-    let ctx = SessionContext::new();
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
 
-    let (schema, batch) = example_batch()?;
-    ctx.register_batch("_events", batch)?;
-
-    add_views(&ctx, &schema).await?;
-    start_cli(&ctx).await?;
+    match cli.command {
+        Some(Commands::Repl) => {
+            start_repl().await?;
+        }
+        Some(Commands::Server { port }) => {
+            let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+            start_server(address).await?;
+        }
+        None => {
+            Cli::command().print_help().unwrap();
+        }
+    }
 
     Ok(())
 }

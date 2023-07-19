@@ -1,7 +1,9 @@
+use std::net::SocketAddr;
 use std::pin::Pin;
 
+use arrow::datatypes::Schema;
 use futures::Stream;
-use tonic::transport::Server;
+use tonic::transport::{self, Server};
 use tonic::{Request, Response, Status, Streaming};
 
 use arrow_flight::{
@@ -11,10 +13,12 @@ use arrow_flight::{
 };
 
 #[derive(Clone)]
-pub struct FlightServiceImpl {}
+pub struct TrailsService {
+    schema: Schema,
+}
 
 #[tonic::async_trait]
-impl FlightService for FlightServiceImpl {
+impl FlightService for TrailsService {
     type HandshakeStream =
         Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send + Sync + 'static>>;
     type ListFlightsStream =
@@ -94,14 +98,12 @@ impl FlightService for FlightServiceImpl {
     }
 }
 
-// #[tokio::main]
-async fn start_server() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50051".parse()?;
-    let service = FlightServiceImpl {};
+pub async fn start_server(address: SocketAddr) -> Result<(), transport::Error> {
+    let service = TrailsService {};
 
     let svc = FlightServiceServer::new(service);
 
-    Server::builder().add_service(svc).serve(addr).await?;
+    Server::builder().add_service(svc).serve(address).await?;
 
     Ok(())
 }
