@@ -1,18 +1,29 @@
-use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
+use std::{
+    net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
+    path::Path,
+    sync::Arc,
+};
 
 use arrow::{error::ArrowError, record_batch::RecordBatch};
 use attributes::{Attribute, AttributeSchema, AttributeType, AttributeValues};
 use buffer::Buffer;
 use clap::{command, CommandFactory, Parser, Subcommand};
-use datafusion::{error::DataFusionError, prelude::SessionContext};
+use data::arrow_schema;
+use datafusion::{
+    datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions},
+    error::DataFusionError,
+    prelude::SessionContext,
+};
 use reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory, Reedline, Signal};
 use tonic::transport;
 use web::start_server;
+use writer::write_batch;
 
 mod attributes;
 mod buffer;
 mod data;
 mod web;
+mod writer;
 
 #[derive(Debug)]
 enum Error {
@@ -71,17 +82,20 @@ fn gen_trace(buffer: &mut Buffer, req: u64, prefix: &str, span_count: usize) {
     }
 }
 
-fn example_batch() -> Result<(AttributeSchema, RecordBatch)> {
-    let schema = AttributeSchema::new(vec![
+fn example_schema() -> AttributeSchema {
+    AttributeSchema::new(vec![
         ("tag", AttributeType::String),
         ("request", AttributeType::UInt64),
-    ]);
+    ])
+}
+
+fn example_batch(schema: &AttributeSchema) -> Result<RecordBatch> {
     let mut buffer = Buffer::new(schema.clone());
 
     gen_trace(&mut buffer, 1, "first", 5);
     gen_trace(&mut buffer, 2, "second", 2);
 
-    Ok((schema, buffer.to_record_batch()?))
+    Ok(buffer.to_record_batch()?)
 }
 
 async fn add_views(ctx: &SessionContext, schema: &AttributeSchema) -> Result<()> {
@@ -142,7 +156,7 @@ async fn add_views(ctx: &SessionContext, schema: &AttributeSchema) -> Result<()>
                 max(e2.time) AS end_time,
                 e1.trace_id,
                 count(1) AS spans,
-                arrow_cast(sum(arrow_cast(e2.duration, 'Int64')), 'Duration(Nanosecond)') AS duration
+                sum(e2.duration) AS duration
             FROM
                 _events e1
                 JOIN _events e2
@@ -194,11 +208,20 @@ async fn exec_query(ctx: &SessionContext, query: &str) -> Result<()> {
     Ok(())
 }
 
-async fn start_repl() -> Result<()> {
+async fn start_repl(path: &str, schema: AttributeSchema) -> Result<()> {
     let ctx = SessionContext::new();
 
-    let (schema, batch) = example_batch()?;
-    ctx.register_batch("_events", batch)?;
+    let listing_opts =
+        ListingOptions::new(Arc::new(ParquetFormat::new())).with_file_extension(".parquet");
+
+    ctx.register_listing_table(
+        "_events",
+        path,
+        listing_opts,
+        Some(Arc::new(arrow_schema(&schema))),
+        None,
+    )
+    .await?;
 
     add_views(&ctx, &schema).await?;
 
@@ -250,23 +273,35 @@ enum Commands {
         #[arg(short, long)]
         port: u16,
     },
+
+    /// Test writes
+    Write {
+        #[arg(short, long)]
+        idx: u16,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let schema = example_schema();
 
-    match cli.command {
-        Some(Commands::Repl) => {
-            start_repl().await?;
+    if let Some(command) = cli.command {
+        match command {
+            Commands::Repl => {
+                start_repl("/tmp/trails", schema).await?;
+            }
+            Commands::Server { port } => {
+                let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+                start_server(address, arrow_schema(&schema)).await?;
+            }
+            Commands::Write { idx } => {
+                let batch = example_batch(&schema)?;
+                write_batch(Path::new("/tmp/trails"), idx, batch)?;
+            }
         }
-        Some(Commands::Server { port }) => {
-            let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-            start_server(address).await?;
-        }
-        None => {
-            Cli::command().print_help().unwrap();
-        }
+    } else {
+        Cli::command().print_help().unwrap();
     }
 
     Ok(())

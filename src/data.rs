@@ -2,7 +2,7 @@ use std::{any::Any, sync::Arc};
 
 use arrow::{
     array::{
-        ArrayBuilder, ArrayRef, BooleanBuilder, DurationNanosecondBuilder, FixedSizeBinaryBuilder,
+        ArrayBuilder, ArrayRef, BooleanBuilder, FixedSizeBinaryBuilder, Int64Builder,
         StringBuilder, TimestampNanosecondBuilder, UInt64Builder, UInt8Builder,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
@@ -92,7 +92,7 @@ impl Event {
     }
 }
 
-fn arrow_schema(schema: &AttributeSchema) -> Schema {
+pub fn arrow_schema(schema: &AttributeSchema) -> Schema {
     let mut fields = vec![
         Field::new("trace_id", DataType::FixedSizeBinary(16), false),
         Field::new("span_id", DataType::UInt64, false),
@@ -102,7 +102,7 @@ fn arrow_schema(schema: &AttributeSchema) -> Schema {
             false,
         ),
         Field::new("type", DataType::UInt8, false),
-        Field::new("duration", DataType::Duration(TimeUnit::Nanosecond), true),
+        Field::new("duration", DataType::Int64, true),
         Field::new("message", DataType::Utf8, true),
     ];
 
@@ -137,7 +137,7 @@ pub fn to_record_batch(
     let mut time_builder = TimestampNanosecondBuilder::with_capacity(size);
     let mut type_builder = UInt8Builder::with_capacity(size);
 
-    let mut duration_builder = DurationNanosecondBuilder::with_capacity(size);
+    let mut duration_builder = Int64Builder::with_capacity(size);
     let mut message_builder = StringBuilder::with_capacity(size, size);
 
     for mut event in events {
