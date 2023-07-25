@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use arrow::{error::ArrowError, record_batch::RecordBatch};
+use arrow::{datatypes::DataType, error::ArrowError, record_batch::RecordBatch};
 use attributes::{Attribute, AttributeSchema, AttributeType, AttributeValues};
 use buffer::Buffer;
 use clap::{command, CommandFactory, Parser, Subcommand};
@@ -211,8 +211,10 @@ async fn exec_query(ctx: &SessionContext, query: &str) -> Result<()> {
 async fn start_repl(path: &str, schema: AttributeSchema) -> Result<()> {
     let ctx = SessionContext::new();
 
-    let listing_opts =
-        ListingOptions::new(Arc::new(ParquetFormat::new())).with_file_extension(".parquet");
+    let listing_opts = ListingOptions::new(Arc::new(ParquetFormat::new()))
+        .with_file_extension(".parquet")
+        .with_table_partition_cols(vec![("hour".to_string(), DataType::Int64)])
+        .with_collect_stat(true);
 
     ctx.register_listing_table(
         "_events",
@@ -297,7 +299,7 @@ async fn main() -> Result<()> {
             }
             Commands::Write { idx } => {
                 let batch = example_batch(&schema)?;
-                write_batch(Path::new("/tmp/trails"), idx, batch)?;
+                write_batch(Path::new("/tmp/trails"), idx, batch).await?;
             }
         }
     } else {

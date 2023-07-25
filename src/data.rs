@@ -98,7 +98,7 @@ pub fn arrow_schema(schema: &AttributeSchema) -> Schema {
         Field::new("span_id", DataType::UInt64, false),
         Field::new(
             "time",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
             false,
         ),
         Field::new("type", DataType::UInt8, false),
@@ -134,7 +134,7 @@ pub fn to_record_batch(
 
     let mut trace_id_builder = FixedSizeBinaryBuilder::with_capacity(size, 16);
     let mut span_id_builder = UInt64Builder::with_capacity(size);
-    let mut time_builder = TimestampNanosecondBuilder::with_capacity(size);
+    let mut time_builder = TimestampNanosecondBuilder::with_capacity(size).with_timezone("UTC");
     let mut type_builder = UInt8Builder::with_capacity(size);
 
     let mut duration_builder = Int64Builder::with_capacity(size);
