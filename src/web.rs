@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::Schema;
 use arrow::error::ArrowError;
-use arrow::ipc::reader::read_record_batch;
 use arrow::ipc::writer::IpcWriteOptions;
-use arrow::ipc::{root_as_message, MessageHeader};
 use arrow::record_batch::RecordBatch;
 use arrow_flight::flight_descriptor::DescriptorType;
+use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::SchemaAsIpc;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -24,6 +24,8 @@ use arrow_flight::{
     ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest,
     HandshakeResponse, PutResult, SchemaResult, Ticket,
 };
+
+use crate::writer::write_batch;
 
 pub struct TrailsService {
     tx: Sender<RecordBatch>,
@@ -72,24 +74,16 @@ impl FlightService for TrailsService {
         &self,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<SchemaResult>, Status> {
-        let descriptor = request.get_ref();
-        match descriptor.r#type() {
-            DescriptorType::Path => {
-                let path = &descriptor.path;
-                if path.len() == 1 && path[0] == "example" {
-                    let options = IpcWriteOptions::default();
-                    let result: SchemaResult = SchemaAsIpc::new(&self.schema, &options)
-                        .try_into()
-                        .expect("Error encoding schema");
-                    Ok(Response::new(result))
-                } else {
-                    Err(Status::unimplemented(
-                        "Implement get_schema: PATH != example",
-                    ))
-                }
-            }
-            _ => Err(Status::unimplemented("Implement get_schema: CMD")),
+        let path = path_from_descriptor(request.get_ref())?;
+        if path != "example" {
+            return Err(Status::unimplemented(format!("Unsupported path: {}", path)));
         }
+
+        let options = IpcWriteOptions::default();
+        let result: SchemaResult = SchemaAsIpc::new(&self.schema, &options)
+            .try_into()
+            .expect("Error encoding schema");
+        Ok(Response::new(result))
     }
 
     async fn do_get(
@@ -105,31 +99,36 @@ impl FlightService for TrailsService {
     ) -> Result<Response<Self::DoPutStream>, Status> {
         let tx = self.tx.clone();
         let mut stream = request.into_inner();
-        let mut descriptor_opt: Option<FlightDescriptor> = None;
 
-        while let Some(message) = stream.next().await {
-            let message = message?;
+        let mut first_message = true;
+        let dictionaries = HashMap::new();
 
-            if descriptor_opt.is_none() {
-                descriptor_opt = message.flight_descriptor.clone();
+        while let Some(data) = stream.next().await {
+            let data = data?;
+
+            if first_message {
+                // TODO: Check incoming schema
+
+                // let message = root_as_message(&data.data_header[..])
+                //     .map_err(|_| Status::internal("Cannot get root as message".to_string()))?;
+
+                // let ipc_schema: arrow_ipc::Schema = message
+                //     .header_as_schema()
+                //     .ok_or_else(|| Status::internal("Cannot get header as Schema".to_string()))?;
+                // let schema = fb_to_schema(ipc_schema);
+
+                let path = path_from_descriptor(&data.flight_descriptor.unwrap())?;
+                if path != "example" {
+                    return Err(Status::unimplemented(format!("Unsupported path: {}", path)));
+                }
+
+                first_message = false;
+                continue;
             }
 
-            match &descriptor_opt {
-                Some(descriptor) => match descriptor.r#type() {
-                    DescriptorType::Path => {
-                        let path = &descriptor.path;
-                        if path.len() == 1 && path[0] == "example" {
-                            let batch = record_batch_from_flight_data(message, &self.schema)
-                                .map_err(arrow_err_to_status)?;
-                            tx.send(batch).await.map_err(send_err_to_status)?;
-                        } else {
-                            return Err(Status::unimplemented("Implement do_put: PATH != example"));
-                        }
-                    }
-                    _ => return Err(Status::unimplemented("Implement do_put: CMD")),
-                },
-                None => unreachable!(),
-            }
+            let batch = flight_data_to_arrow_batch(&data, self.schema.clone(), &dictionaries)
+                .map_err(arrow_err_to_status)?;
+            tx.send(batch).await.map_err(send_err_to_status)?;
         }
 
         let output = futures::stream::iter(vec![Ok(PutResult {
@@ -169,33 +168,20 @@ fn arrow_err_to_status(err: ArrowError) -> Status {
     Status::internal(err.to_string())
 }
 
-fn record_batch_from_flight_data(
-    data: FlightData,
-    schema: &SchemaRef,
-) -> Result<RecordBatch, ArrowError> {
-    let ipc_message = root_as_message(&data.data_header[..])
-        .map_err(|err| ArrowError::ParseError(format!("Unable to get root as message: {err:?}")))?;
-
-    match ipc_message.header_type() {
-        MessageHeader::RecordBatch => {
-            let ipc_record_batch = ipc_message.header_as_record_batch().ok_or_else(|| {
-                ArrowError::ComputeError(
-                    "Unable to convert flight data header to a record batch".to_string(),
-                )
-            })?;
-
-            let dictionaries_by_field = HashMap::new();
-            let record_batch = read_record_batch(
-                &arrow::buffer::Buffer::from(data.data_body),
-                ipc_record_batch,
-                schema.clone(),
-                &dictionaries_by_field,
-                None,
-                &ipc_message.version(),
-            )?;
-            Ok(record_batch)
+fn path_from_descriptor(descriptor: &FlightDescriptor) -> Result<String, Status> {
+    match &descriptor.r#type() {
+        DescriptorType::Path => {
+            let path = &descriptor.path;
+            if path.len() == 1 {
+                Ok(path[0].to_string())
+            } else {
+                Err(Status::unimplemented(format!(
+                    "Path descriptor with {} length",
+                    path.len()
+                )))
+            }
         }
-        _ => unimplemented!(),
+        _ => Err(Status::unimplemented("Path descriptor CMD")),
     }
 }
 
@@ -207,8 +193,10 @@ pub async fn start_server(address: SocketAddr, schema: Schema) -> Result<(), tra
     };
 
     tokio::spawn(async move {
-        while let Some(message) = rx.recv().await {
-            // todo
+        while let Some(batch) = rx.recv().await {
+            if let Err(err) = write_batch(&Path::new("/tmp/trails"), rand::random(), batch).await {
+                println!("failed to write batch: {:?}", err)
+            }
         }
     });
 

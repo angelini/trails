@@ -4,10 +4,11 @@ use std::{
     sync::Arc,
 };
 
-use arrow::{datatypes::DataType, error::ArrowError, record_batch::RecordBatch};
+use arrow::{datatypes::DataType, error::ArrowError};
 use attributes::{Attribute, AttributeSchema, AttributeType, AttributeValues};
 use buffer::Buffer;
 use clap::{command, CommandFactory, Parser, Subcommand};
+use client::{Client, ClientError};
 use data::arrow_schema;
 use datafusion::{
     datasource::{file_format::parquet::ParquetFormat, listing::ListingOptions},
@@ -21,6 +22,7 @@ use writer::write_batch;
 
 mod attributes;
 mod buffer;
+mod client;
 mod data;
 mod web;
 mod writer;
@@ -29,6 +31,7 @@ mod writer;
 enum Error {
     AddrParse(AddrParseError),
     Arrow(ArrowError),
+    Client(ClientError),
     DataFusion(DataFusionError),
     Tonic(transport::Error),
 }
@@ -42,6 +45,12 @@ impl From<AddrParseError> for Error {
 impl From<ArrowError> for Error {
     fn from(value: ArrowError) -> Self {
         Error::Arrow(value)
+    }
+}
+
+impl From<ClientError> for Error {
+    fn from(value: ClientError) -> Self {
+        Error::Client(value)
     }
 }
 
@@ -63,6 +72,7 @@ fn gen_attributes(tag: &str, req: u64) -> AttributeValues {
     let mut values = AttributeValues::new();
     values.insert(0, Attribute::String(tag.to_string()));
     values.insert(1, Attribute::UInt64(req));
+    values.insert(2, Attribute::Boolean(false));
     values
 }
 
@@ -86,16 +96,15 @@ fn example_schema() -> AttributeSchema {
     AttributeSchema::new(vec![
         ("tag", AttributeType::String),
         ("request", AttributeType::UInt64),
+        ("error", AttributeType::Boolean),
     ])
 }
 
-fn example_batch(schema: &AttributeSchema) -> Result<RecordBatch> {
+fn example_buffer(schema: &AttributeSchema) -> Buffer {
     let mut buffer = Buffer::new(schema.clone());
-
     gen_trace(&mut buffer, 1, "first", 5);
     gen_trace(&mut buffer, 2, "second", 2);
-
-    Ok(buffer.to_record_batch()?)
+    buffer
 }
 
 async fn add_views(ctx: &SessionContext, schema: &AttributeSchema) -> Result<()> {
@@ -281,6 +290,12 @@ enum Commands {
         #[arg(short, long)]
         idx: u16,
     },
+
+    /// Write from a flight client
+    Client {
+        #[arg(short, long)]
+        port: u16,
+    },
 }
 
 #[tokio::main]
@@ -298,8 +313,13 @@ async fn main() -> Result<()> {
                 start_server(address, arrow_schema(&schema)).await?;
             }
             Commands::Write { idx } => {
-                let batch = example_batch(&schema)?;
+                let batch = example_buffer(&schema).to_record_batch()?;
                 write_batch(Path::new("/tmp/trails"), idx, batch).await?;
+            }
+            Commands::Client { port } => {
+                let mut client = Client::new(port).await?;
+                let buffer = example_buffer(&schema);
+                client.put_buffer("example", buffer).await?;
             }
         }
     } else {

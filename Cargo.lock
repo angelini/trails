@@ -2643,6 +2643,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "arrow-flight",
+ "arrow-ipc",
  "byteorder",
  "bytes",
  "chrono",
