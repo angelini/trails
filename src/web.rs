@@ -11,6 +11,8 @@ use arrow::record_batch::RecordBatch;
 use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::SchemaAsIpc;
+use arrow_ipc::convert::fb_to_schema;
+use arrow_ipc::root_as_message;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use std::convert::TryInto;
@@ -109,13 +111,17 @@ impl FlightService for TrailsService {
             if first_message {
                 // TODO: Check incoming schema
 
-                // let message = root_as_message(&data.data_header[..])
-                //     .map_err(|_| Status::internal("Cannot get root as message".to_string()))?;
+                let message = root_as_message(&data.data_header[..])
+                    .map_err(|_| Status::internal("Cannot get root as message".to_string()))?;
 
-                // let ipc_schema: arrow_ipc::Schema = message
-                //     .header_as_schema()
-                //     .ok_or_else(|| Status::internal("Cannot get header as Schema".to_string()))?;
-                // let schema = fb_to_schema(ipc_schema);
+                let ipc_schema: arrow_ipc::Schema = message
+                    .header_as_schema()
+                    .ok_or_else(|| Status::internal("Cannot get header as Schema".to_string()))?;
+                let schema = fb_to_schema(ipc_schema);
+
+                if !self.schema.contains(&schema) {
+                    return Err(Status::failed_precondition("Incompatible schema"));
+                }
 
                 let path = path_from_descriptor(&data.flight_descriptor.unwrap())?;
                 if path != "example" {

@@ -1,4 +1,5 @@
 use std::{
+    io,
     net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     sync::Arc,
@@ -33,6 +34,7 @@ enum Error {
     Arrow(ArrowError),
     Client(ClientError),
     DataFusion(DataFusionError),
+    Io(io::Error),
     Tonic(transport::Error),
 }
 
@@ -57,6 +59,12 @@ impl From<ClientError> for Error {
 impl From<DataFusionError> for Error {
     fn from(value: DataFusionError) -> Self {
         Error::DataFusion(value)
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(value: io::Error) -> Self {
+        Error::Io(value)
     }
 }
 
@@ -236,10 +244,7 @@ async fn start_repl(path: &str, schema: AttributeSchema) -> Result<()> {
 
     add_views(&ctx, &schema).await?;
 
-    let history = Box::new(
-        FileBackedHistory::with_file(100, "history.txt".into())
-            .expect("Error configuring history with file"),
-    );
+    let history = Box::new(FileBackedHistory::with_file(100, "history.txt".into())?);
 
     let mut line_editor = Reedline::create().with_history(history);
     let prompt = DefaultPrompt::new(

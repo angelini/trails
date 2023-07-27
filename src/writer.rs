@@ -26,17 +26,21 @@ pub async fn write_batch(path: &Path, idx: u16, batch: RecordBatch) -> Result<()
 }
 
 fn min_max_time(batch: &RecordBatch) -> Result<(DateTime<Utc>, DateTime<Utc>), ArrowError> {
-    let time_array = batch
+    if let Some(time_array) = batch
         .column_by_name("time")
         .unwrap()
         .as_any()
         .downcast_ref::<TimestampNanosecondArray>()
-        .unwrap();
+    {
+        let min = min(time_array).unwrap();
+        let max = max(time_array).unwrap();
 
-    let min = min(time_array).unwrap();
-    let max = max(time_array).unwrap();
-
-    Ok((Utc.timestamp_nanos(min), Utc.timestamp_nanos(max)))
+        Ok((Utc.timestamp_nanos(min), Utc.timestamp_nanos(max)))
+    } else {
+        Err(ArrowError::CastError(
+            "Cannot cast time field to nanosecond array".to_string(),
+        ))
+    }
 }
 
 fn chunk_time_range(start: DateTime<Utc>, stop: DateTime<Utc>) -> Vec<i64> {
