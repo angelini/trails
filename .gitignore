@@ -1,2 +1,4 @@
 /target
 history.txt
+typescript/node_modules
+typescript/package-lock.json
