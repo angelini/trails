@@ -51,27 +51,6 @@ impl FlightService for TrailsService {
     type DoExchangeStream =
         Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + Sync + 'static>>;
 
-    async fn handshake(
-        &self,
-        _request: Request<Streaming<HandshakeRequest>>,
-    ) -> Result<Response<Self::HandshakeStream>, Status> {
-        Err(Status::unimplemented("Implement handshake"))
-    }
-
-    async fn list_flights(
-        &self,
-        _request: Request<Criteria>,
-    ) -> Result<Response<Self::ListFlightsStream>, Status> {
-        Err(Status::unimplemented("Implement list_flights"))
-    }
-
-    async fn get_flight_info(
-        &self,
-        _request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Implement get_flight_info"))
-    }
-
     async fn get_schema(
         &self,
         request: Request<FlightDescriptor>,
@@ -109,8 +88,6 @@ impl FlightService for TrailsService {
             let data = data?;
 
             if first_message {
-                // TODO: Check incoming schema
-
                 let message = root_as_message(&data.data_header[..])
                     .map_err(|_| Status::internal("Cannot get root as message".to_string()))?;
 
@@ -142,6 +119,27 @@ impl FlightService for TrailsService {
         })]);
 
         Ok(Response::new(Box::pin(output) as Self::DoPutStream))
+    }
+
+    async fn handshake(
+        &self,
+        _request: Request<Streaming<HandshakeRequest>>,
+    ) -> Result<Response<Self::HandshakeStream>, Status> {
+        Err(Status::unimplemented("Implement handshake"))
+    }
+
+    async fn list_flights(
+        &self,
+        _request: Request<Criteria>,
+    ) -> Result<Response<Self::ListFlightsStream>, Status> {
+        Err(Status::unimplemented("Implement list_flights"))
+    }
+
+    async fn get_flight_info(
+        &self,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        Err(Status::unimplemented("Implement get_flight_info"))
     }
 
     async fn do_action(

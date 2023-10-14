@@ -1,23 +1,23 @@
 import net from "net";
-import { tableFromArrays } from "apache-arrow";
+import { tableFromArrays, tableToIPC } from "apache-arrow";
 
-const rainAmounts = Float32Array.from({ length: 5 }, () =>
-  Number((Math.random() * 20).toFixed(1))
-);
-
-const rainDates = Array.from(
-  { length: 5 },
-  (_, i) => new Date(Date.now() - 1000 * 60 * 60 * 24 * i)
-);
-
-const rainfall = tableFromArrays({
-  precipitation: rainAmounts,
-  date: rainDates,
+const values = tableFromArrays({
+  tags: ["aa", "bb", "cc"],
+  request: [1, 2, 3],
+  error: [false, false, false],
 });
+
+const serialized = tableToIPC(values);
 
 const main = async (path: string) => {
   const ipcClient = net
     .createConnection(path)
     .on("connect", () => console.log("connected"))
     .on("error", (err) => console.log(`error: ${err}`));
+
+  ipcClient.write(serialized);
 };
+
+await main("/tmp/trails/example.socket");
+
+export default {};
