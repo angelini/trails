@@ -3,7 +3,8 @@
     "lib": ["ESNext", "dom"],
     "outDir": "lib",
     "removeComments": true,
-    "target": "ESNext",
+    "module": "esnext",
+    "target": "esnext",
 
     // Module resolution
     "baseUrl": "./",
@@ -26,6 +27,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["./**/*.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules/**/*"]
 }
