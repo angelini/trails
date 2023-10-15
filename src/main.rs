@@ -1,9 +1,4 @@
-use std::{
-    io,
-    net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
-    path::Path,
-    sync::Arc,
-};
+use std::{io, net::AddrParseError, path::Path, sync::Arc};
 
 use arrow::{datatypes::DataType, error::ArrowError};
 use attributes::{Attribute, AttributeSchema, AttributeType, AttributeValues};
@@ -287,7 +282,7 @@ enum Commands {
     /// Data collection server
     Server {
         #[arg(short, long)]
-        port: u16,
+        path: String,
     },
 
     /// Test writes
@@ -313,9 +308,8 @@ async fn main() -> Result<()> {
             Commands::Repl => {
                 start_repl("/tmp/trails", schema).await?;
             }
-            Commands::Server { port } => {
-                let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-                start_server(address, arrow_schema(&schema)).await?;
+            Commands::Server { path } => {
+                start_server(&path, arrow_schema(&schema)).await?;
             }
             Commands::Write { idx } => {
                 let batch = example_buffer(&schema).to_record_batch()?;

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,8 +15,10 @@ use arrow_ipc::root_as_message;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use std::convert::TryInto;
+use tokio::net::UnixListener;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{self, Sender};
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{self, Server};
 use tonic::{Request, Response, Status, Streaming};
 
@@ -189,7 +190,7 @@ fn path_from_descriptor(descriptor: &FlightDescriptor) -> Result<String, Status>
     }
 }
 
-pub async fn start_server(address: SocketAddr, schema: Schema) -> Result<(), transport::Error> {
+pub async fn start_server(socket_path: &str, schema: Schema) -> Result<(), transport::Error> {
     let (tx, mut rx) = mpsc::channel::<RecordBatch>(128);
     let service = TrailsService {
         schema: Arc::new(schema),
@@ -206,7 +207,14 @@ pub async fn start_server(address: SocketAddr, schema: Schema) -> Result<(), tra
 
     let svc = FlightServiceServer::new(service);
 
-    Server::builder().add_service(svc).serve(address).await?;
+    // Return these errors
+    let uds = UnixListener::bind(socket_path).unwrap();
+    let uds_stream = UnixListenerStream::new(uds);
+
+    Server::builder()
+        .add_service(svc)
+        .serve_with_incoming(uds_stream)
+        .await?;
 
     Ok(())
 }

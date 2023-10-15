@@ -15,7 +15,16 @@ const main = async (path: string) => {
     .on("connect", () => console.log("connected"))
     .on("error", (err) => console.log(`error: ${err}`));
 
-  ipcClient.write(serialized);
+  return new Promise((resolve, reject) => {
+    ipcClient.write(serialized, (err) => {
+      if (err) {
+        reject(err);
+      } else {
+        console.log("wrote data");
+        resolve(void 0);
+      }
+    });
+  });
 };
 
 await main("/tmp/trails/example.socket");

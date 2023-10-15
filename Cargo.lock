@@ -2666,6 +2666,7 @@ dependencies = [
  "rand",
  "reedline",
  "tokio",
+ "tokio-stream",
  "tonic",
  "uuid",
 ]
